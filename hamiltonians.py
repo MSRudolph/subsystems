@@ -1,6 +1,8 @@
 import numpy as np
 import qutip
-from itertools import product, permutations
+from itertools import permutations
+from datatypes import HamiltonianObject
+
 
 PAULIS = {
     'I': qutip.identity(2).full(),
@@ -10,32 +12,32 @@ PAULIS = {
 }
 
 
-def get_random_H(n_qubits: int, seed=None):
+def get_random_H(n_qubits: int, seed=None) -> HamiltonianObject:
     if seed is not None:
         np.random.rand(seed)
     mat = np.random.normal(size=(2**n_qubits, 2**n_qubits)) + \
         np.random.normal(size=(2**n_qubits, 2**n_qubits))*1j
-    return mat*mat.conj().T, None, None
+    return HamiltonianObject(mat*mat.conj().T, None, None)
 
 
-def get_random_tensor_H(qS: int, qE: int, seed=None):
+def get_random_tensor_H(qS: int, qE: int, seed=None) -> HamiltonianObject:
     if seed is not None:
         np.random.rand(seed)
-    H_s = qutip.Qobj(get_random_H(qS, seed=seed)[0])
-    H_e = qutip.Qobj(get_random_H(qE, seed=seed)[0])
+    H_s = qutip.Qobj(get_random_H(qS, seed=seed).H)
+    H_e = qutip.Qobj(get_random_H(qE, seed=seed).H)
     Htensor = qutip.tensor(H_s, H_e)
-    return Htensor.full(), H_s, H_e
+    return HamiltonianObject(Htensor.full(), H_s, H_e)
 
 
-def get_interpolated_H(t: float, qS: int, qE: int, seed=None):
+def get_interpolated_H(t: float, qS: int, qE: int, seed=None) -> HamiltonianObject:
     Htensor, H_s, H_e = get_random_tensor_H(qS, qE, seed)
 
     Hrandom = get_random_H(qS, qE, seed)
 
-    return (Htensor*t + Hrandom*(1-t)), H_s, H_e
+    return HamiltonianObject((Htensor*t + Hrandom*(1-t)), H_s, H_e)
 
 
-def get_central_spin_H(qS: int, qE: int):
+def get_central_spin_H(qS: int, qE: int) -> HamiltonianObject:
     # central spin H
 
     def tensor_product_list(list_Mats):
@@ -73,4 +75,4 @@ def get_central_spin_H(qS: int, qE: int):
             mat_list.append(PAULIS[this_qubit])
         H_self += tensor_product_list(mat_list)
 
-    return H_int + H_self, None, None
+    return HamiltonianObject(H_int + H_self, None, None)
