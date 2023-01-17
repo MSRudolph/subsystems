@@ -1,26 +1,27 @@
 import numpy as np
 import scipy
 from qutip import Qobj
-from datatypes import PsiObject, HamiltonianObject
+from datatypes import PsiObject#, HamiltonianObject
+from hamiltonians import get_decoherence_time
 from typing import Optional
+from functools import partial
+import tensornetwork as tn
+import jax
+jax.config.update('jax_platform_name', 'cpu')
+jax.config.update("jax_enable_x64", True)
 
 
 # optimization routine
-def opt(B: np.ndarray, training_dt: np.ndarray, psi_object: PsiObject, H_object: HamiltonianObject, qS: int, qE: int, thresh=1e-11, maxiter=1e5, print_every: int = 500):
+def opt(B: np.ndarray, training_dt: np.ndarray, psi_object: PsiObject, H: np.ndarray, qS: int, qE: int, train_state: bool = False, thresh=1e-11, maxiter=1e5, print_every: int = 500):
 
-    eigvals_H = H_object.eigvals_H
-    P = H_object.P
-    co = cost(B, psi_object.get_psi(), eigvals_H, P, training_dt, qS, qE)
+    # eigvals_H = H_object.eigvals_H
+    # P = H_object.P
+    co = cost(psi_object, B, H, training_dt, qS, qE)
     print("Starting Guess purity", co)
 
-
-    train_state = False
-    if psi_object.A is not None:
-        train_state = True
-
     i = 0
-    beta = 0
-    alpha = 0
+    beta = len(training_dt) #0
+    alpha = len(training_dt)  #0
 
     prev_cost = 1
 #     thresh = 1e-11 #cost threshold (stopping criterion)
@@ -29,10 +30,10 @@ def opt(B: np.ndarray, training_dt: np.ndarray, psi_object: PsiObject, H_object:
         i += 1
         
         if train_state:
-            psi_object.A = update_A(B, training_dt, psi_object, H_object.eigvals_H, H_object.P, beta, qS, qE)
-        B = update_B(B, training_dt, psi_object.get_psi(), H_object.eigvals_H, H_object.P, beta, qS, qE)
+            psi_object.A = update_A(psi_object, B, H, training_dt, beta, qS, qE)
+        B = update_B(psi_object, B, H, training_dt, beta, qS, qE)
         
-        co = cost(B, psi_object.get_psi(), eigvals_H, P, training_dt, qS, qE)
+        co = cost(psi_object, B, H, training_dt, qS, qE)
 
         cost_ratio = co/prev_cost
         fac = 1.1
@@ -69,7 +70,7 @@ def opt(B: np.ndarray, training_dt: np.ndarray, psi_object: PsiObject, H_object:
 
         prev_cost = co
 
-        if (i % print_every == 0):
+        if (i % print_every == 0) or (i<=10):
             print("COST", co, "after", i, "iterations ", "alpha=", alpha, "beta=", beta)
 
     print("Total iterations:", i)
@@ -79,39 +80,36 @@ def opt(B: np.ndarray, training_dt: np.ndarray, psi_object: PsiObject, H_object:
 
 
 # for checking if you've found a solution that generalizes beyond the training times
-def check(B: np.ndarray, times: np.ndarray, psi: float, eigvals_H, P, qS: int, qE: int):
+def check(psi_object: PsiObject, B: np.ndarray, H:np.ndarray, times: np.ndarray, qS: int, qE: int):
+    A = psi_object.A
+    psi_s = psi_object.psi_s
+    psi_e = psi_object.psi_e
+    act_entire_state = not (A.shape == (2**qS, 2**qS))
+    return [float(jax_cost(A, B, H, psi_s, psi_e, [t], qS, qE, act_entire_state)) for t in times]
 
-    def get_purity_global(ket: np.ndarray, system_qubit_index: int):
-        dims = [[2**(qS), 2**(qE)], [2**(qS), 2**(qE)]]
-        rho = Qobj(np.outer(ket, ket.conj()), dims=dims)
-        red_rho = rho.ptrace(system_qubit_index)
-        purity = np.trace(red_rho.full()@red_rho.full())
-        return purity
-
-    # if times is None:
-    #     times = np.logspace(np.log10(t_dec)-1,np.log10(t_dec)+4,50)
-
-    prt = []
-    for t in times:
-        psi_t = B@eH(t, eigvals_H, P, qS, qE)@psi
-        prt.append(get_purity_global(psi_t, 0).real)
-
-    return prt
+# def jax_check(A, B, H, psiS, psiE, dt):
+#     return [tensor_cost(A, B, H, psiS, psiE, [t]) for t in dt]
 
 
-def prep_training(get_H_function, qS: int, qE: int, random_state: bool=False, train_state: bool = False, seed: Optional[int] = None):
-    H_object = get_H_function()
+def prep_training(get_H_function, qS: int, qE: int, random_state: bool=False, train_entire_state: bool = False, seed: Optional[int] = None):
+    H, H_s, H_e = get_H_function()
+    t_dec = get_decoherence_time(H)
+    H /= t_dec*1
+    if H_s is not None:
+        H_s /= t_dec*1
+    if H_e is not None:
+        H_e /= t_dec*1
 
-    if train_state:
-        A = get_random_unitary(qS=qS, qE=0)
+    if train_entire_state:
+        A = np.eye(2**(qS+qE), 2**(qS+qE))
     else:
-        A = None
+        A = np.eye(2**qS, 2**qS)
 
-    if random_state or H_object.H_s is None:
+    if random_state or H_s is None:
         psi_s = rand_state(2**qS, seed=seed)
 
     else:
-        psi_s = np.linalg.eigh(H_object.H_s)[1][:, 0]
+        psi_s = np.linalg.eigh(H_s)[1][:, 0]
     
     psi_e = rand_state(2**qE, seed=seed)
     psi = np.ndarray.flatten(np.tensordot(psi_s, psi_e, axes=0))
@@ -119,7 +117,7 @@ def prep_training(get_H_function, qS: int, qE: int, random_state: bool=False, tr
 
     B = get_random_unitary(qS, qE, seed=seed)
 
-    return B, H_object, psi_object
+    return B, H, psi_object
 
 
 def get_random_unitary(qS: int, qE: int, seed=None):
@@ -137,65 +135,182 @@ def rand_state(dims, seed=None) -> np.ndarray:
     return state/np.linalg.norm(state)
 
 
-def eH(t: float, eigvals_H: np.ndarray, P: np.ndarray, qS: int, qE: int) -> np.ndarray:
-
-    H_D = np.zeros((2**(qS+qE), 2**(qS+qE))).astype(dtype=np.complex128)
-    np.fill_diagonal(H_D, np.exp(-1j*eigvals_H*t))
-    Ut = P@H_D@P.conj().T
-    return Ut
+def eH(t: float, H: np.ndarray) -> np.ndarray:
+    return jax.scipy.linalg.expm(-1j*H*t)
 
 
-def cost(B: np.ndarray, psi: np.ndarray, eigvals_H: np.ndarray, P: np.ndarray, dt: np.ndarray, qS: int, qE: int) -> float:
-    co = 0
-    for t in dt:
-        phi = B@eH(t, eigvals_H, P, qS, qE)@psi
-        phi = np.reshape(phi, (2**qS, 2**qE))
-        rho_pt = phi@phi.T.conj()
-        co += 1-np.trace(rho_pt@rho_pt)
-    return co/len(dt)
-
-
-def update_B(B: np.ndarray, training_dt: np.ndarray, psi: np.ndarray, eigvals_H: np.ndarray, P: np.ndarray, beta: float, qS: int, qE: int):
-    E = np.zeros((2**(qS+qE), 2**(qS+qE)))
-    for t in training_dt:
-        Ut = eH(t, eigvals_H, P, qS, qE)
-        chi = Ut @ psi
-        phi = B @ chi
-        phi = np.reshape(phi, (2**qS, 2**qE))
-        rho = phi@phi.T.conj()
-
-        phit = rho.conj().T@phi.conj()
-        
-        phit = phit.flatten()
-        E = E+np.outer(chi, phit)
-
-    u, x, v = scipy.linalg.svd((E+beta*B.conj().T), lapack_driver='gesvd')
-    B_new = v.conj().T@u.conj().T
-    return B_new
-
-
-def update_A(B: np.ndarray, training_dt: np.ndarray, psi_object: PsiObject, eigvals_H: np.ndarray, P: np.ndarray, alpha: float, qS: int, qE: int):
+def cost(psi_object:PsiObject, B: np.ndarray, H: np.ndarray, dt: np.ndarray, qS: int, qE: int) -> float:
+    A = psi_object.A
     psi_s = psi_object.psi_s
     psi_e = psi_object.psi_e
-    A = psi_object.A
-    psiSA = A@psi_s
+    act_entire_state = not (A.shape == (2**qS, 2**qS))
+    return np.real(jax_cost(A, B, H, psi_s, psi_e, dt, qS, qE, act_entire_state))
+
+
+@partial(jax.jit, static_argnames=["qS", "qE", "act_entire_state"])
+def jax_cost(A, B, H, psiS, psiE, dt, qS:int, qE:int, act_entire_state: bool):
+    tpsiS = tn.Node(psiS, axis_names=["S"], backend="jax")
+    tpsiE = tn.Node(psiE, axis_names=["E"], backend="jax")
     
-    psi = np.ndarray.flatten(np.tensordot(psiSA, psi_e, axes=0))
+    if act_entire_state:
+        tA = tn.Node(jax.numpy.reshape(A, [2**qE, 2**qS, 2**qE, 2**qS]), axis_names=["Eout", "Sout", "Ein", "Sin"], backend="jax")
+        tA["Sin"] ^ tpsiS["S"]
+        tA["Ein"] ^ tpsiE["E"]
+        tpsi = tn.contractors.auto([tA, tpsiS, tpsiE], output_edge_order=[tA["Eout"], tA["Sout"]])
+        tpsi.axis_names = ["E", "S"]
+    else:
+        tA = tn.Node(A, axis_names=["Sout", "Sin"], backend="jax")
+        tApsi = tn.contract(tA["Sin"] ^ tpsiS["S"])
+        tpsi = tn.outer_product(tpsiE, tApsi, axis_names=["E", "S"])
 
-    E = np.zeros((2**qS, 2**qS)).astype(dtype=np.complex128)
+    tB = tn.Node(np.reshape(B, [2**qE,2**qS, 2**qE,2**qS]), axis_names=["Eout", "Sout", "Ein", "Sin"], backend="jax")
 
-    for t in training_dt:
-        Ut = eH(t, eigvals_H, P, qS, qE)
-        phi = B@Ut@psi
-        phi = np.reshape(phi, [2**qS,2**qE]) #, order='F')
-        rho = phi@phi.conj().T
+    co = 0.0
+    for t in dt:
+        Ut = jax.scipy.linalg.expm(-1j*H*t)
+        tUt = tn.Node(np.reshape(Ut, [2**qE,2**qS, 2**qE,2**qS]), axis_names=["Eout", "Sout", "Ein", "Sin"], backend="jax")
 
-        phit = rho.conj()@phi.conj()
-        phit = phit.flatten()  # np.reshape(phit,[1,2**(qS+qE)]) # , order='F')
-        phit = phit@B@Ut
-        phit = np.reshape(phit,[2**qS, 2**qE]) # , order = 'F')
-        phit = phit@psi_e
-        E = E + np.outer(phit, psi_s)
-    u,x,v = scipy.linalg.svd((E+alpha*A.conj().T),lapack_driver='gesvd')
+        tpsi["S"] ^ tUt["Sin"]
+        tpsi["E"] ^ tUt["Ein"]
+        tchi = tn.contract_between(tpsi, tUt, output_edge_order=[tUt["Eout"], tUt["Sout"]], axis_names=["E", "S"])
+
+        tchi["S"] ^ tB["Sin"]
+        tchi["E"] ^ tB["Ein"]
+        tphi1 = tn.contract_between(tchi, tB, output_edge_order=[tB["Eout"], tB["Sout"]], axis_names=["E", "S"])
+
+        tphi2 = tphi1.copy()
+        tphi_conj1 = tphi1.copy(conjugate=True)
+        tphi_conj2 = tphi_conj1.copy()
+
+        tphi1["E"] ^ tphi_conj1["E"]
+        tphi2["E"] ^ tphi_conj2["E"]
+        tphi1["S"] ^ tphi_conj2["S"]
+        tphi2["S"] ^ tphi_conj1["S"]
+
+        node = tn.contractors.auto([tphi1, tphi2, tphi_conj1, tphi_conj2])
+        co += 1 - jax.numpy.real(node.tensor)
+        
+    return co /len(dt)
+
+
+def update_B(psi_object:PsiObject, B: np.ndarray, H: np.ndarray, training_dt: np.ndarray, beta: float, qS: int, qE: int):
+    A = psi_object.A
+    psi_s = psi_object.psi_s
+    psi_e = psi_object.psi_e
+    act_entire_state = not (A.shape == (2**qS, 2**qS))
+    return jax_updateB(A, B, H, psi_s, psi_e, training_dt, beta, qS, qE, act_entire_state)
+
+
+@partial(jax.jit, static_argnames=["qS", "qE", "act_entire_state"])
+def jax_updateB(A, B, H, psiS, psiE, dt, beta, qS, qE, act_entire_state:bool):
+    tpsiS = tn.Node(psiS, axis_names=["S"], backend="jax")
+    tpsiE = tn.Node(psiE, axis_names=["E"], backend="jax")
+    
+    if act_entire_state:
+        tA = tn.Node(jax.numpy.reshape(A, [2**qE, 2**qS, 2**qE, 2**qS]), axis_names=["Eout", "Sout", "Ein", "Sin"], backend="jax")
+        tA["Sin"] ^ tpsiS["S"]
+        tA["Ein"] ^ tpsiE["E"]
+        tpsi = tn.contractors.auto([tA, tpsiS, tpsiE], output_edge_order=[tA["Eout"], tA["Sout"]])
+        tpsi.axis_names = ["E", "S"]
+    else:
+        tA = tn.Node(A, axis_names=["Sout", "Sin"], backend="jax")
+        tApsi = tn.contract(tA["Sin"] ^ tpsiS["S"])
+        tpsi = tn.outer_product(tpsiE, tApsi, axis_names=["E", "S"])
+    
+    tB = tn.Node(np.reshape(B, [2**qE,2**qS, 2**qE,2**qS]), axis_names=["Eout", "Sout", "Ein", "Sin"], backend="jax")
+
+    E = jax.numpy.zeros((2**(qE+qS), 2**(qS+qE)), dtype=jax.numpy.complex128)
+    for t in dt:
+        Ut = jax.scipy.linalg.expm(-1j*H*t)
+        tUt = tn.Node(np.reshape(Ut, [2**qE,2**qS, 2**qE,2**qS]), axis_names=["Eout", "Sout", "Ein", "Sin"], backend="jax")
+
+        tpsi["S"] ^ tUt["Sin"]
+        tpsi["E"] ^ tUt["Ein"]
+        tchi = tn.contract_between(tpsi, tUt, output_edge_order=[tUt["Eout"], tUt["Sout"]], axis_names=["E", "S"])
+
+        tchi["S"] ^ tB["Sin"]
+        tchi["E"] ^ tB["Ein"]
+        tphi1 = tn.contract_between(tchi, tB, output_edge_order=[tB["Eout"], tB["Sout"]], axis_names=["E", "S"])
+
+        tphi_conj1 = tphi1.copy(conjugate=True)
+        tphi_conj2 = tphi_conj1.copy()
+
+        tphi1["E"] ^ tphi_conj1["E"]
+        tphi1["S"] ^ tphi_conj2["S"]
+
+        E += tn.contractors.auto([tphi1, tchi, tphi_conj1, tphi_conj2], 
+                            output_edge_order=[tchi["E"], tchi["S"], tphi_conj2["E"], tphi_conj1["S"]]).tensor.reshape((2**(qE+qS), 2**(qS+qE)))
+    
+
+    u,x,v = jax.numpy.linalg.svd((E+beta*B.conj().T))
+    B = v.conj().T@u.conj().T
+    return B
+
+
+def update_A(psi_object: PsiObject, B: np.ndarray, H: np.ndarray, training_dt: np.ndarray, alpha: float, qS: int, qE: int):
+    A = psi_object.A
+    psi_s = psi_object.psi_s
+    psi_e = psi_object.psi_e
+    act_entire_state = not (A.shape == (2**qS, 2**qS))
+    return jax_updateA(A, B, H, psi_s, psi_e, training_dt, alpha, qS, qE, act_entire_state)
+
+@partial(jax.jit, static_argnames=["qS", "qE", "act_entire_state"])
+def jax_updateA(A, B, H, psiS, psiE, dt, alpha, qS, qE, act_entire_state):
+    tpsiS = tn.Node(psiS, axis_names=["S"], backend="jax")
+    tpsiE = tn.Node(psiE, axis_names=["E"], backend="jax")
+    
+    if act_entire_state:
+        tA = tn.Node(jax.numpy.reshape(A, [2**qE, 2**qS, 2**qE, 2**qS]), axis_names=["Eout", "Sout", "Ein", "Sin"], backend="jax")
+        tA["Sin"] ^ tpsiS["S"]
+        tA["Ein"] ^ tpsiE["E"]
+        tpsi = tn.contractors.auto([tA, tpsiS, tpsiE], output_edge_order=[tA["Eout"], tA["Sout"]])
+        tpsi.axis_names = ["E", "S"]
+        E = jax.numpy.zeros((2**(qE+qS), 2**(qE+qS)), dtype=jax.numpy.complex128)
+    else:
+        tA = tn.Node(A, axis_names=["Sout", "Sin"], backend="jax")
+        tApsi = tn.contract(tA["Sin"] ^ tpsiS["S"])
+        tpsi = tn.outer_product(tpsiE, tApsi, axis_names=["E", "S"])
+        E = jax.numpy.zeros((2**(qS), 2**(qS)), dtype=jax.numpy.complex128)
+    
+    
+    tB = tn.Node(np.reshape(B, [2**qE,2**qS, 2**qE,2**qS]), axis_names=["Eout", "Sout", "Ein", "Sin"], backend="jax")
+
+    for t in dt:
+        Ut = jax.scipy.linalg.expm(-1j*H*t)
+        tUt = tn.Node(np.reshape(Ut, [2**qE,2**qS, 2**qE,2**qS]), axis_names=["Eout", "Sout", "Ein", "Sin"], backend="jax")
+      
+        tpsi["S"] ^ tUt["Sin"]
+        tpsi["E"] ^ tUt["Ein"]
+        tchi = tn.contract_between(tpsi, tUt, output_edge_order=[tUt["Eout"], tUt["Sout"]], axis_names=["E", "S"])
+
+        tchi["S"] ^ tB["Sin"]
+        tchi["E"] ^ tB["Ein"]
+        tphi1 = tn.contract_between(tchi, tB, output_edge_order=[tB["Eout"], tB["Sout"]], axis_names=["E", "S"])
+
+        tphi_conj1 = tphi1.copy(conjugate=True)
+        tphi_conj2 = tphi_conj1.copy()
+
+        tphi1["E"] ^ tphi_conj1["E"]
+        tphi1["S"] ^ tphi_conj2["S"]
+
+        tphi_conj2["E"] ^ tB["Eout"]
+        tphi_conj1["S"] ^ tB["Sout"]
+
+        tB["Ein"] ^ tUt["Eout"]
+        tB["Sin"] ^ tUt["Sout"]
+
+        
+        if act_entire_state:
+            E += tn.contractors.auto(
+                [tphi1, tphi_conj1, tphi_conj2, tB, tUt, tpsiE, tpsiS], 
+                output_edge_order=[tpsiE["E"], tpsiS["S"], tUt["Ein"], tUt["Sin"]]
+                ).tensor.reshape((2**(qE+qS), 2**(qE+qS)))
+        else:
+            tpsiE["E"] ^ tUt["Ein"]
+            E += tn.contractors.auto([tphi1, tphi_conj1, tphi_conj2, tB, tUt, tpsiE, tpsiS], 
+                                output_edge_order=[tpsiS["S"], tUt["Sin"]]).tensor
+
+
+    u,x,v = jax.numpy.linalg.svd((E+alpha*A.conj().T))
     A = v.conj().T@u.conj().T
     return A

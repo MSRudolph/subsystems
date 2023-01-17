@@ -1,7 +1,7 @@
 import numpy as np
 import qutip
-from itertools import permutations
-from datatypes import HamiltonianObject
+from itertools import permutations, product
+# from datatypes import HamiltonianObject
 
 
 PAULIS = {
@@ -12,40 +12,34 @@ PAULIS = {
 }
 
 
-def get_random_H(n_qubits: int, seed=None) -> HamiltonianObject:
+def get_random_H(n_qubits: int, seed=None) -> np.ndarray:
     if seed is not None:
         np.random.rand(seed)
     mat = np.random.normal(size=(2**n_qubits, 2**n_qubits)) + \
         np.random.normal(size=(2**n_qubits, 2**n_qubits))*1j
-    return HamiltonianObject(mat*mat.conj().T, None, None)
+    return 1/4*mat*mat.conj().T, None, None
 
 
-def get_random_tensor_H(qS: int, qE: int, seed=None) -> HamiltonianObject:
+def get_random_tensor_H(qS: int, qE: int, seed=None) -> np.ndarray:
     if seed is not None:
         np.random.rand(seed)
-    H_s = qutip.Qobj(get_random_H(qS, seed=seed).H)
-    H_e = qutip.Qobj(get_random_H(qE, seed=seed).H)
-    Htensor = qutip.tensor(H_s, H_e)
-    return HamiltonianObject(Htensor.full(), H_s, H_e)
+    H_s = qutip.Qobj(get_random_H(qS, seed=seed)[0])
+    H_e = qutip.Qobj(get_random_H(qE, seed=seed)[0])
+    Htensor = qutip.tensor(H_e, H_s)
+    return Htensor.full(), H_s, H_e
 
 
-def get_interpolated_H(t: float, qS: int, qE: int, seed=None) -> HamiltonianObject:
+def get_interpolated_H(t: float, qS: int, qE: int, seed=None) -> np.ndarray:
     Htensor, H_s, H_e = get_random_tensor_H(qS, qE, seed)
 
-    Hrandom = get_random_H(qS, qE, seed)
+    Hrandom, _, _ = get_random_H(qS+qE, seed)
 
-    return HamiltonianObject((Htensor*t + Hrandom*(1-t)), H_s, H_e)
+    return (Htensor*t + Hrandom*(1-t)), H_s, H_e
 
 
-def get_central_spin_H(qS: int, qE: int) -> HamiltonianObject:
+def get_central_spin_H(qS: int, qE: int, randomized: bool = False) -> np.ndarray:
     # central spin H
 
-    def tensor_product_list(list_Mats):
-        # tensor product all the elements of the list
-        temp = np.kron(list_Mats[0], list_Mats[1])
-        for i in range(1, len(list_Mats)-1):
-            temp = np.kron(temp, list_Mats[i+1])
-        return temp
     p_list = ['X']
     [p_list.append('I') for i in range(qE-1)]
 
@@ -55,6 +49,7 @@ def get_central_spin_H(qS: int, qE: int) -> HamiltonianObject:
     for i, term in enumerate(int_terms):
         this_term_mats = [PAULIS[key] for key in term]
         product_of_this_term = tensor_product_list(this_term_mats)
+        # print(i, term)
         if (i == 1):
             H_term = np.kron(product_of_this_term, PAULIS['X'])
         elif (i == 2):
@@ -62,17 +57,56 @@ def get_central_spin_H(qS: int, qE: int) -> HamiltonianObject:
         else:
             H_term = np.kron(product_of_this_term, PAULIS['Z'])
 
-        H_int += np.random.rand()*H_term
+        
+        coeff = np.random.rand() if randomized else 1. 
+        H_int += coeff * H_term
+
+    # print(int_terms)
     p_list = ['Y']
     [p_list.append('I') for i in range(qE)]
-    self_terms = permutations(p_list)
+    self_terms = set(permutations(p_list))
 
     H_self = np.zeros((2**(qS+qE), 2**(qS+qE))).astype(dtype=np.complex128)
     for terms in set(self_terms):
-        # print(terms)
+        #print(terms)
         mat_list = []
         for this_qubit in terms:
             mat_list.append(PAULIS[this_qubit])
         H_self += tensor_product_list(mat_list)
 
-    return HamiltonianObject(H_int + H_self, None, None)
+    # print(self_terms)
+    return H_int + H_self, None, None
+
+
+def get_decoherence_time(H: np.ndarray)-> float:
+    eigvals_H, P = np.linalg.eigh(H)
+    return eigvals_H[-1]
+
+
+def pauli_decomp(H, thresh=1.e-10, printt=False):
+    N = int(np.log2(len(H)))
+    paulis_comb = product(PAULIS, repeat=N)#product from itertools is awesome. Gives cartesian product for my dictionary
+
+    pauli_coeffs_list=[]#list of all the coefficients
+    pauli_terms_list =[]#list of the terms to go with the coeffs, like Z\otimesZ\otimesX etc
+    for term in paulis_comb:
+        this_term_mats = [PAULIS[key] for key in term]#'term' is each of the terms in the Pali sum like  Z\otimesZ\otimesX. Get the corresonding matrices from the dictionary upstairs
+        this_coeff = HS( tensor_product_list(this_term_mats),H )/(2**N)
+        pauli_coeffs_list.append(this_coeff)
+        term_str = ''
+        for els in list(term):
+            term_str+=els
+        pauli_terms_list.append(term_str )#the variable 'term' is a tuple so hard to store (for what's to come later), so just convert it to a string like 'ZZX' and append to list
+        if (printt==True and np.abs(this_coeff)>thresh):
+            print(term, this_coeff.real)
+    return pauli_coeffs_list, pauli_terms_list
+
+def tensor_product_list(list_Mats):
+    # tensor product all the elements of the list
+    temp = np.kron(list_Mats[0], list_Mats[1])
+    for i in range(1, len(list_Mats)-1):
+        temp = np.kron(temp, list_Mats[i+1])
+    return temp
+
+def HS(M1, M2):
+    return (np.dot(M1.conjugate().transpose(), M2)).trace()
