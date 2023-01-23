@@ -13,16 +13,14 @@ PAULIS = {
 
 
 def get_random_H(n_qubits: int, seed=None) -> np.ndarray:
-    if seed is not None:
-        np.random.rand(seed)
+    np.random.seed(seed)
     mat = np.random.normal(size=(2**n_qubits, 2**n_qubits)) + \
         np.random.normal(size=(2**n_qubits, 2**n_qubits))*1j
     return 1/4*mat*mat.conj().T, None, None
 
 
 def get_random_tensor_H(qS: int, qE: int, seed=None) -> np.ndarray:
-    if seed is not None:
-        np.random.rand(seed)
+    np.random.seed(seed)
     H_s = qutip.Qobj(get_random_H(qS, seed=seed)[0])
     H_e = qutip.Qobj(get_random_H(qE, seed=seed)[0])
     Htensor = qutip.tensor(H_e, H_s)
@@ -37,7 +35,7 @@ def get_interpolated_H(t: float, qS: int, qE: int, seed=None) -> np.ndarray:
     return (Htensor*t + Hrandom*(1-t)), H_s, H_e
 
 
-def get_central_spin_H(qS: int, qE: int, randomized: bool = False) -> np.ndarray:
+def get_central_spin_H(qS: int, qE: int, randomized: bool = False, int_term_factor=1) -> np.ndarray:
     # central spin H
 
     p_list = ['X']
@@ -59,7 +57,7 @@ def get_central_spin_H(qS: int, qE: int, randomized: bool = False) -> np.ndarray
 
         
         coeff = np.random.rand() if randomized else 1. 
-        H_int += coeff * H_term
+        H_int += int_term_factor * coeff * H_term
 
     # print(int_terms)
     p_list = ['Y']
