@@ -15,8 +15,6 @@ jax.config.update("jax_enable_x64", True)
 # optimization routine
 def opt(B: np.ndarray, training_dt: np.ndarray, psi_object: PsiObject, H: np.ndarray, qS: int, qE: int, train_state: bool = False, thresh=1e-11, maxiter=1e5, print_every: int = 500):
 
-    # eigvals_H = H_object.eigvals_H
-    # P = H_object.P
     co = cost(psi_object, B, H, training_dt, qS, qE)
     print("Starting Guess purity", co)
 
@@ -25,8 +23,6 @@ def opt(B: np.ndarray, training_dt: np.ndarray, psi_object: PsiObject, H: np.nda
     alpha = len(training_dt)  #0
 
     prev_cost = 1
-#     thresh = 1e-11 #cost threshold (stopping criterion)
-#     thresh = 2e-7
     while (co > thresh) and (i < maxiter):
         i += 1
         
@@ -38,10 +34,6 @@ def opt(B: np.ndarray, training_dt: np.ndarray, psi_object: PsiObject, H: np.nda
 
         cost_ratio = co/prev_cost
         fac = 1.1
-        secondThresh = thresh  # 1.e-9
-        if (cost_ratio > (1-1.e-5) and co < secondThresh):
-            print("Stuck, but cost is quite low so might as well quit now. Cost=", co)
-            return B, co
 
         # the following adapts alpha given the cost ratio for the previous and this step
         if (alpha < 1.e-10):
@@ -58,16 +50,6 @@ def opt(B: np.ndarray, training_dt: np.ndarray, psi_object: PsiObject, H: np.nda
         else:  # decrease alpha
             alpha = alpha/fac
             beta = beta/fac
-
-        if (alpha > 500):  # or (cost_ratio>(1-1.e-9) and co>thresh):
-            print("This isn't working; let's try starting with a new guess")
-            psi_object.A = get_random_unitary(int(np.log2(np.shape(psi_object.A)[0]))) # start with an inital guess
-            alpha = 0
-        
-        if (beta > 500):  # or (cost_ratio>(1-1.e-9) and co>thresh):
-            print("This isn't working; let's try starting with a new guess")
-            B = get_random_unitary(qS+qE) # start with an inital guess
-            beta = 0
 
         prev_cost = co
 
@@ -134,7 +116,8 @@ def get_random_unitary(n: int, seed=None):
     if seed is not None:
         np.random.seed(seed)
     # B, s, vh = np.linalg.svd(np.random.normal(size=(2**n, 2**n)) + 1j * np.random.normal(size=(2**n, 2**n)))
-    return qutip.rand_unitary_haar(2**n, seed=seed).data.todense()
+    # return qutip.rand_unitary_haar(2**n, seed=seed).data.todense()
+    return np.linalg.svd(np.random.rand(2**n, 2**n) + 0.1j * np.random.rand(2**n, 2**n))[0]
 
 
 def rand_state(dims, seed=None) -> np.ndarray:
@@ -150,8 +133,6 @@ def eH(t: float, H: np.ndarray) -> np.ndarray:
 
 def cost(psi_object:PsiObject, B: np.ndarray, H: np.ndarray, dt: np.ndarray, qS: int, qE: int) -> float:
     A = psi_object.A
-    # psi_s = psi_object.psi_s
-    # psi_e = psi_object.psi_e
     act_entire_state = not (A.shape == (2**qS, 2**qS))
     return np.real(jax_cost(A, B, H, psi_object.psi, dt, qS, qE, act_entire_state))
 
@@ -217,17 +198,13 @@ def act_A_on_psi_system(A: np.ndarray, psi: np.ndarray):
 
 def update_B(psi_object:PsiObject, B: np.ndarray, H: np.ndarray, training_dt: np.ndarray, beta: float, qS: int, qE: int):
     A = psi_object.A
-    # psi_s = psi_object.psi_s
-    # psi_e = psi_object.psi_e
     act_entire_state = not (A.shape == (2**qS, 2**qS))
     return jax_updateB(A, B, H, psi_object.psi, training_dt, beta, qS, qE, act_entire_state)
 
 
 @partial(jax.jit, static_argnames=["qS", "qE", "act_entire_state"])
 def jax_updateB(A, B, H, psi, dt, beta, qS, qE, act_entire_state:bool):
-    # tpsiS = tn.Node(psiS, axis_names=["S"], backend="jax")
-    # tpsiE = tn.Node(psiE, axis_names=["E"], backend="jax")
-    
+
     if act_entire_state:
         Apsi = act_A_on_psi_global(jax.numpy.reshape(A, [2**qE, 2**qS, 2**qE, 2**qS]), psi)
         tApsi = tn.Node(Apsi, axis_names=["E", "S"], backend="jax") 
@@ -261,7 +238,9 @@ def jax_updateB(A, B, H, psi, dt, beta, qS, qE, act_entire_state:bool):
     
 
     u,x,v = jax.numpy.linalg.svd((E+beta*B.conj().T))
+    # u,x,v = jax.numpy.linalg.svd(E)
     B = v.conj().T@u.conj().T
+    # B = jax_interpolation_function(B, B_new, lr=0.8)
     return B
 
 
@@ -272,8 +251,7 @@ def update_A(psi_object: PsiObject, B: np.ndarray, H: np.ndarray, training_dt: n
 
 @partial(jax.jit, static_argnames=["qS", "qE", "act_entire_state"])
 def jax_updateA(A, B, H, psi, dt, alpha, qS, qE, act_entire_state):
-    # tpsiS = tn.Node(psiS, axis_names=["S"], backend="jax")
-    # tpsiE = tn.Node(psiE, axis_names=["E"], backend="jax")
+
     tpsi = tn.Node(psi, axis_names=["E", "S"], backend="jax")
 
     if act_entire_state:
@@ -327,3 +305,30 @@ def jax_updateA(A, B, H, psi, dt, alpha, qS, qE, act_entire_state):
     u,x,v = jax.numpy.linalg.svd((E+alpha*A.conj().T))
     A = v.conj().T@u.conj().T
     return A
+
+
+
+def interpolation_function(old_matrix, new_tensor, lr=1.0):
+    print("interpolating")
+    return np.array(jax_interpolation_function(old_matrix, new_tensor, lr))
+
+
+@jax.jit
+def jax_interpolation_function(old_matrix, new_matrix, lr=1.0):
+    print("interpolating jax")
+    modified_tensor = old_matrix.dot(
+        jax_fractional_power((old_matrix.conj().T).dot(new_matrix), lr)
+    )
+    modified_tensor = jax_unitarize(modified_tensor)
+    return modified_tensor
+
+@jax.jit
+def jax_fractional_power(mat, p):
+    d, v = jax.numpy.linalg.eig(mat)
+    return v.dot(jax.numpy.diag(d) ** p).dot(jax.numpy.linalg.inv(v))
+
+@jax.jit
+def jax_unitarize(mat: np.ndarray):
+    mat, r = jax.numpy.linalg.qr(mat, mode="complete")
+    mat = mat * jax.numpy.sign(jax.numpy.diag(r))
+    return mat
