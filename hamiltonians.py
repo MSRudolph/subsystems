@@ -57,7 +57,7 @@ def get_central_spin_H(qS: int, qE: int, randomized: bool = False, int_term_fact
 
         
         coeff = np.random.rand() if randomized else 1. 
-        H_int += int_term_factor * coeff * H_term
+        H_int += (1-int_term_factor) * coeff * H_term
 
     # print(int_terms)
     p_list = ['Y']
