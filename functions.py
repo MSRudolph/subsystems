@@ -68,8 +68,13 @@ def check(psi_object: PsiObject, B: np.ndarray, H:np.ndarray, times: np.ndarray,
     act_entire_state = not (A.shape == (2**qS, 2**qS))
     return [float(jax_cost(A, B, H, psi_object.psi, [t], qS, qE, act_entire_state)) for t in times]
 
-# def jax_check(A, B, H, psiS, psiE, dt):
-#     return [tensor_cost(A, B, H, psiS, psiE, [t]) for t in dt]
+def jax_check(psi_object: PsiObject, B: np.ndarray, H:np.ndarray, times: np.ndarray, qS: int, qE: int):
+    A = psi_object.A
+    act_entire_state = not (A.shape == (2**qS, 2**qS))
+    return [jax_cost(A, B, H, psi_object.psi, [t], qS, qE, act_entire_state) for t in times]
+
+
+
 
 
 def prep_training(get_H_function, qS: int, qE: int, random_state: bool=True, A_acts_globally: bool = True, A_is_identity: bool=True, seed: Optional[int] = None):
@@ -101,9 +106,16 @@ def prep_training(get_H_function, qS: int, qE: int, random_state: bool=True, A_a
         psi = rand_state(2**(qS+qE), seed=seed)
         
     else:
-        psi_s = rand_state(2**qS, seed=seed)
-        psi_e = rand_state(2**qE, seed=seed)
-        psi = np.ndarray.flatten(np.tensordot(psi_e, psi_s, axes=0))
+        # psi_s = rand_state(2**qS, seed=seed)
+        # psi_e = rand_state(2**qE, seed=seed)
+        # psi = np.ndarray.flatten(np.tensordot(psi_e, psi_s, axes=0))
+        psi_s = None
+        psi_e = None
+        states = [rand_state(2) for _ in range(qS+qE)]
+        psi = 1
+        for st in states:
+            psi = np.tensordot(psi, st, axes=0)
+        psi = psi.flatten()
     
     psi_object = PsiObject(psi=np.reshape(psi, [2**qE, 2**qS]), psi_s=psi_s, psi_e=psi_e, A=A)
 
@@ -142,39 +154,87 @@ def jax_cost(A, B, H, psi, dt, qS:int, qE:int, act_entire_state: bool):
     
     if act_entire_state:
         Apsi = act_A_on_psi_global(jax.numpy.reshape(A, [2**qE, 2**qS, 2**qE, 2**qS]), psi)
-        tApsi = tn.Node(Apsi, axis_names=["E", "S"], backend="jax") 
     else:
         Apsi = act_A_on_psi_system(A, psi)
-        tApsi = tn.Node(Apsi, axis_names=["E", "S"], backend="jax") 
-
-    tB = tn.Node(np.reshape(B, [2**qE,2**qS, 2**qE,2**qS]), axis_names=["Eout", "Sout", "Ein", "Sin"], backend="jax")
+    
+    # tApsi = tn.Node(Apsi, axis_names=["E", "S"], backend="jax") 
+    # tB = tn.Node(np.reshape(B, [2**qE,2**qS, 2**qE,2**qS]), axis_names=["Eout", "Sout", "Ein", "Sin"], backend="jax")
 
     co = 0.0
     for t in dt:
-        Ut = jax.scipy.linalg.expm(-1j*H*t)
-        tUt = tn.Node(np.reshape(Ut, [2**qE,2**qS, 2**qE,2**qS]), axis_names=["Eout", "Sout", "Ein", "Sin"], backend="jax")
+        # Ut = jax.scipy.linalg.expm(-1j*H*t)
+        # tUt = tn.Node(np.reshape(Ut, [2**qE,2**qS, 2**qE,2**qS]), axis_names=["Eout", "Sout", "Ein", "Sin"], backend="jax")
 
-        tApsi["S"] ^ tUt["Sin"]
-        tApsi["E"] ^ tUt["Ein"]
-        tchi = tn.contract_between(tApsi, tUt, output_edge_order=[tUt["Eout"], tUt["Sout"]], axis_names=["E", "S"])
+        # tApsi["S"] ^ tUt["Sin"]
+        # tApsi["E"] ^ tUt["Ein"]
+        # tchi = tn.contract_between(tApsi, tUt, output_edge_order=[tUt["Eout"], tUt["Sout"]], axis_names=["E", "S"])
 
-        tchi["S"] ^ tB["Sin"]
-        tchi["E"] ^ tB["Ein"]
-        tphi1 = tn.contract_between(tchi, tB, output_edge_order=[tB["Eout"], tB["Sout"]], axis_names=["E", "S"])
+        # tchi["S"] ^ tB["Sin"]
+        # tchi["E"] ^ tB["Ein"]
+        # tphi1 = tn.contract_between(tchi, tB, output_edge_order=[tB["Eout"], tB["Sout"]], axis_names=["E", "S"])
 
-        tphi2 = tphi1.copy()
-        tphi_conj1 = tphi1.copy(conjugate=True)
-        tphi_conj2 = tphi_conj1.copy()
+        # tphi2 = tphi1.copy()
+        # tphi_conj1 = tphi1.copy(conjugate=True)
+        # tphi_conj2 = tphi_conj1.copy()
 
-        tphi1["E"] ^ tphi_conj1["E"]
-        tphi2["E"] ^ tphi_conj2["E"]
-        tphi1["S"] ^ tphi_conj2["S"]
-        tphi2["S"] ^ tphi_conj1["S"]
+        # tphi1["E"] ^ tphi_conj1["E"]
+        # tphi2["E"] ^ tphi_conj2["E"]
+        # tphi1["S"] ^ tphi_conj2["S"]
+        # tphi2["S"] ^ tphi_conj1["S"]
 
-        node = tn.contractors.auto([tphi1, tphi2, tphi_conj1, tphi_conj2])
-        co += 1 - jax.numpy.real(node.tensor)
+        # node = tn.contractors.auto([tphi1, tphi2, tphi_conj1, tphi_conj2])
+        # co += 1 - jax.numpy.real(node.tensor)
+        co += jax_cost_part(Apsi, B, H, t, qS, qE)
         
     return co /len(dt)
+
+
+def vec_cost(psi_object:PsiObject, B: np.ndarray, H: np.ndarray, dt: np.ndarray, qS: int, qE: int) -> float:
+    A = psi_object.A
+    psi = psi_object.psi
+    act_entire_state = not (A.shape == (2**qS, 2**qS))
+
+    if act_entire_state:
+        Apsi = act_A_on_psi_global(jax.numpy.reshape(A, [2**qE, 2**qS, 2**qE, 2**qS]), psi)
+    else:
+        Apsi = act_A_on_psi_system(A, psi)
+
+    co = 0
+    for t in dt:
+        co += jax_cost_part(Apsi, B, H, t, qS, qE)
+    return co/len(dt)
+    # return jax.numpy.mean(vec_cost_part(Apsi, B, H, dt, qS, qE))
+
+@partial(jax.jit, static_argnames=["qS", "qE"])
+def jax_cost_part(Apsi, B, H, t, qS, qE):
+    tApsi = tn.Node(Apsi, axis_names=["E", "S"], backend="jax") 
+
+    tB = tn.Node(np.reshape(B, [2**qE,2**qS, 2**qE,2**qS]), axis_names=["Eout", "Sout", "Ein", "Sin"], backend="jax")
+
+    Ut = jax.scipy.linalg.expm(-1j*H*t)
+    tUt = tn.Node(np.reshape(Ut, [2**qE,2**qS, 2**qE,2**qS]), axis_names=["Eout", "Sout", "Ein", "Sin"], backend="jax")
+
+    tApsi["S"] ^ tUt["Sin"]
+    tApsi["E"] ^ tUt["Ein"]
+    tchi = tn.contract_between(tApsi, tUt, output_edge_order=[tUt["Eout"], tUt["Sout"]], axis_names=["E", "S"])
+
+    tchi["S"] ^ tB["Sin"]
+    tchi["E"] ^ tB["Ein"]
+    tphi1 = tn.contract_between(tchi, tB, output_edge_order=[tB["Eout"], tB["Sout"]], axis_names=["E", "S"])
+
+    tphi2 = tphi1.copy()
+    tphi_conj1 = tphi1.copy(conjugate=True)
+    tphi_conj2 = tphi_conj1.copy()
+
+    tphi1["E"] ^ tphi_conj1["E"]
+    tphi2["E"] ^ tphi_conj2["E"]
+    tphi1["S"] ^ tphi_conj2["S"]
+    tphi2["S"] ^ tphi_conj1["S"]
+
+    node = tn.contractors.auto([tphi1, tphi2, tphi_conj1, tphi_conj2])
+    return 1 - jax.numpy.real(node.tensor)
+
+vec_cost_part = jax.vmap(jax_cost_part, (None, None, None, 0, None, None))
 
 
 @jax.jit
@@ -332,3 +392,8 @@ def jax_unitarize(mat: np.ndarray):
     mat, r = jax.numpy.linalg.qr(mat, mode="complete")
     mat = mat * jax.numpy.sign(jax.numpy.diag(r))
     return mat
+
+
+
+
+vectorized_jax_cost = jax.vmap(jax_cost, (None, None, None, None, 0, None, None, None, None),(None, None, None, None, 0, None, None, None, None))
