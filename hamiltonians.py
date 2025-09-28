@@ -13,6 +13,9 @@ PAULIS = {
 
 
 def get_random_H(n_qubits: int, seed=None) -> np.ndarray:
+    """
+    Generate a random Hamiltonian on 'n_qubits' qubits.
+    """
     np.random.seed(seed)
     mat = np.random.normal(size=(2**n_qubits, 2**n_qubits)) + \
         np.random.normal(size=(2**n_qubits, 2**n_qubits))*1j
@@ -20,6 +23,10 @@ def get_random_H(n_qubits: int, seed=None) -> np.ndarray:
 
 
 def get_random_tensor_H(qS: int, qE: int, seed=None) -> np.ndarray:
+    """
+    Generate a Hamiltonian that is a tensor product of random Hamiltonians
+    on 'qS' system qubits and on 'qE' environment qubits.
+    """
     np.random.seed(seed)
     H_s = qutip.Qobj(get_random_H(qS, seed=seed)[0])
     H_e = qutip.Qobj(get_random_H(qE, seed=seed)[0])
@@ -28,6 +35,10 @@ def get_random_tensor_H(qS: int, qE: int, seed=None) -> np.ndarray:
 
 
 def get_interpolated_H(t: float, qS: int, qE: int, seed=None) -> np.ndarray:
+    """
+    Generate an interpolated Hamiltonian between a fully random Hamiltonian
+    and random tensor Hamiltonian. t=0 gives fully random, t=1 gives fully tensor.
+    """
     Htensor, H_s, H_e = get_random_tensor_H(qS, qE, seed)
 
     Hrandom, _, _ = get_random_H(qS+qE, seed)
@@ -36,7 +47,12 @@ def get_interpolated_H(t: float, qS: int, qE: int, seed=None) -> np.ndarray:
 
 
 def get_central_spin_H(qS: int, qE: int, randomized: bool = False, int_term_factor=1) -> np.ndarray:
-    # central spin H
+    """
+    Generate a Hamiltonian for a central spin model with 'qS' system qubits
+    and 'qE' environment qubits. If 'randomized' is True, the interaction terms
+    will have random coefficients. The 'int_term_factor' (between 0 and 1)
+    controls the relative strength of the interaction terms vs the self terms.
+    """
 
     p_list = ['X']
     [p_list.append('I') for i in range(qE-1)]
